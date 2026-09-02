@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import threading
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 import evaluate
@@ -180,10 +181,17 @@ def main():
     # a failure in the simulator surfaces before any long method run starts.
     print("Simulating datasets ...")
     datasets = []
-    for scenario_index, scenario_name in enumerate(scenario_names):
+    for scenario_name in scenario_names:
         scenario = SCENARIOS[scenario_name]
+        # Seed from the scenario's own name, not its position in whatever
+        # subset was requested. Deriving it from an index meant that running
+        # `--scenarios strict_clean hard` produced different trees than a full
+        # run did for those same two scenarios, so absolute numbers were not
+        # comparable between runs that selected different subsets. Comparisons
+        # within a run were always fine, since every method saw the same data.
+        scenario_seed = 1000 * (1 + zlib.crc32(scenario_name.encode()) % 1000)
         for replicate in range(args.replicates):
-            seed = 1000 * (scenario_index + 1) + replicate
+            seed = scenario_seed + replicate
             sim_dir = os.path.join(args.out_dir, "sims",
                                    f"{scenario_name}_rep{replicate}")
             sim_meta = simulate_scenario(scenario_name, scenario, sim_dir,
