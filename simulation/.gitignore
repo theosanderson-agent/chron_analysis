@@ -1,0 +1,9 @@
+# Benchmark output: large, and reproducible by re-running run_benchmark.py
+results*/
+baseline_dev/
+*_dev/
+*.log
+__pycache__/
+
+# Local environment: a symlink to a venv built outside the repo
+.venv*
