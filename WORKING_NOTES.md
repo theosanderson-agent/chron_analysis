@@ -126,7 +126,7 @@ mis-specifying the scale that converts per-site branch lengths to mutations.
 
 ## Current state (2026-09-02, after the improvement swarm)
 
-### Branch `v2-perf`: four merged improvements
+### Branch `v2-perf`: seven merged improvements
 
 All measured on simulated trees where every internal node's true date is known,
 and all verified independently of the agent that proposed them.
@@ -137,6 +137,10 @@ and all verified independently of the agent that proposed them.
 | `9212644` | Theil-Sen instead of least squares for the starting clock rate | relaxed-clock mean error 176 to 35 days, worst 691 to 51 |
 | `53e6f41` | `--tip_date_init`, tip-date-informed initialisation (opt-in) | 30% lower error, better in 14 of 15 replicates |
 | `b5e513f` | Early stopping on date stability, on device (default on) | 21-65% fewer steps, saving grows with tree size |
+| `77ef5c5` | Convergence check samples nodes rather than using all | gave back ~1 GB at 100k tips (later made moot by `bbb66c8`) |
+| `9677df6` | Iterative tree traversal | fixes a hard `RecursionError` crash at 1M tips |
+| `73d2448` | Ignore the root's branch length | real-data bug: ebola median 18.5 to 12.6 days vs treetime |
+| `bbb66c8` | Pointer-jumping path sums, not a sparse matrix | 8.7x faster and 4.4x smaller at 300k tips |
 
 Two things about the speed work are worth keeping. First, chronumental is now
 **faster than treetime**, roughly 4 seconds against 25-31 on a 300-tip tree,
@@ -150,6 +154,64 @@ ceiling. That is a real if narrow compatibility break, mitigated by
 `--disable_early_stopping`. The answer is verifiably unchanged, which is why it
 was allowed to default on where `--tip_date_init`, which does change answers,
 was not.
+
+### chronumental now handles a million tips
+
+This is the headline. At the start of this work chronumental could not date a
+million-tip tree at all, which is the size it exists for. Two separate defects
+stood in the way, both found here.
+
+`9677df6`: `helpers.preorder_traversal` recursed once per tree level, so a deep
+tree exhausted Python's call stack. A million-tip coalescent tree raised
+`RecursionError` before fitting began.
+
+`bbb66c8`: root-to-tip sums used a sparse matrix with one entry per
+(node, ancestor) pair, so its memory grew with the total path length summed
+over the tree. At 300k tips that was 116 million entries and 2.6 GB of a
+3.2 GB run, the largest single allocation. Pointer jumping computes the same
+sums in memory proportional to node count.
+
+Whole-run, 2000-step ceiling:
+
+| Tips | before | after |
+|---|---|---|
+| 100,000 | 77 s, 1.95 GB | 16 s, 1.10 GB |
+| 300,000 | 415 s, 6.83 GB | 48 s, 1.54 GB |
+| 1,000,000 | never finished, killed at 33 GB | **219 s, 3.84 GB** |
+
+At a million tips all 999,999 internal nodes are dated, with mean absolute
+error 29.2 days, median 11.4, 90th percentile 70.6, 77.5% within a month, and
+the root 70 days out. The median is *better* than the 300-tip benchmark's 14.6
+days, because a denser tree constrains each node with more nearby tips.
+
+Pointer jumping also suits a GPU better, since it needs a gather and an add
+where the sparse form needed a scatter-add. On an RTX 2080 Ti at 100k tips the
+path sum uses 2.7 MB of device memory against 183 MB, and takes 0.10 ms against
+1.53 ms. GPU memory being scarcer than host memory, the old structure was
+closer to fatal there than on CPU.
+
+### Real data: recapitulating treetime on ebola
+
+Everything above is simulation, where the generator is ours. The ebola example
+dataset is the check against that. Using treetime's published dates as the
+reference, over 228 internal nodes:
+
+| | median \|diff\| | mean signed | max | root date |
+|---|---|---|---|---|
+| LSD2 | 8.1 d | -3.4 d | 83 d | 2013-10-15 |
+| chronumental before `73d2448` | 18.5 d | +20.3 d | 183 d | 2014-04-02 |
+| chronumental after | 12.6 d | +10.4 d | 75 d | 2013-12-14 |
+| treetime | - | - | - | 2013-10-01 |
+
+The fix was that a root has no parent, so a branch length on it spans no time,
+but treetime's divergence trees carry one and chronumental was treating it as
+elapsed time. **The simulation benchmark could never have caught this**, because
+its generated trees give the root no branch length. It only appears on trees
+produced by other tools, which is chronumental's normal input.
+
+Further chasing treetime's numbers on this dataset would be misguided: treetime
+and LSD2 disagree with each other by 24% on the clock rate, and chronumental now
+sits inside the range they span. There is no ground truth here to tune toward.
 
 ### Benchmark result: where each tool wins
 
